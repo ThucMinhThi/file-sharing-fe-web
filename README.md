@@ -117,6 +117,13 @@ Ví dụ:
     ```bash
     npm run dev
     ```
+## Usage for Docker
+
+```bash
+docker compose up -d
+```
+
+To specify the backend api, you can update NEXT_PUBLIC_API_URL in the docker-compose.yaml
 
 ## Notes
 - Should factor to components
