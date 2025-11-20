@@ -1,48 +1,99 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 
 // Dữ liệu giả lập (hard-code)
 const mockMeta = {
     id: "abc123xyz",
-    fileName: "Báo cáo tài chính Q3 2025 - Bí mật tuyệt đối.pdf",
-    size: 8_543_210,
+    fileName: "File Sharing Backend API Documentation.pdf",
+    size: 194_560,
     mimeType: "application/pdf",
-    expiresAt: "2025-12-31T23:59:59Z",
-    availableFrom: null,
+    expiresAt: "2025-11-22T23:59:59Z", // Ngày hết hạn
+    availableFrom: "2025-11-20T12:00:00Z",   // TEST trạng thái Pending
     passwordProtected: true,
     requiresTotp: false,
+    uploadedBy: "me.dev"             
 };
 
 export default function Page({ params }: { params: { token: string } }) {
     const { token } = params;
+
     const [password, setPassword] = useState("");
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState<string | null>(null);
     const [downloaded, setDownloaded] = useState(false);
 
-    // Giả lập tải xuống (chỉ để thấy hiệu ứng)
+    // Countdown cho trạng thái Pending
+    const [countdown, setCountdown] = useState("");
+
+    // Copy link
+    const copyLink = () => {
+        const link = `${window.location.origin}/s/${token}`;
+        navigator.clipboard.writeText(link);
+        alert("Đã copy link chia sẻ!");
+    };
+
+    // -------------------------------
+    // XỬ LÝ 3 TRẠNG THÁI FILE
+    // -------------------------------
+    const now = new Date();
+    const expiresAt = new Date(mockMeta.expiresAt);
+    const availableFrom = mockMeta.availableFrom ? new Date(mockMeta.availableFrom) : null;
+
+    const isExpired = now > expiresAt;
+    const isPending = availableFrom && now < availableFrom;
+    const isActive = !isExpired && !isPending;
+
+    useEffect(() => {
+        if (!isPending) return;
+
+        const timer = setInterval(() => {
+            const diff = (availableFrom!.getTime() - new Date().getTime()) / 1000;
+
+            if (diff <= 0) {
+                setCountdown("Đang mở…");
+                return;
+            }
+
+            const d = Math.floor(diff / 86400);                  // ngày
+            const h = Math.floor((diff % 86400) / 3600);         // giờ
+            const m = Math.floor((diff % 3600) / 60);            // phút
+            const s = Math.floor(diff % 60);                     // giây
+
+            if (d > 0) {
+                setCountdown(`${d}d ${h}h ${m}m ${s}s`);
+            } else {
+                setCountdown(`${h}h ${m}m ${s}s`);
+            }
+
+        }, 1000);
+
+            return () => clearInterval(timer);
+        }, [isPending]);
+
+
+    // Download mô phỏng
     const download = async () => {
+        if (!isActive) return;
+
         if (mockMeta.passwordProtected && password !== "123456") {
-            setError("Mật khẩu không đúng. Gợi ý: 123456 😉");
+            setError("Mật khẩu không đúng.");
             return;
         }
 
         setLoading(true);
         setError(null);
 
-        // Giả lập delay tải file
         await new Promise((resolve) => setTimeout(resolve, 1500));
 
-        // Tạo file giả để download (blob rỗng hoặc file mẫu)
         const fakeContent = `
-      Đây là file giả lập cho mockup.
-      Tên file: ${mockMeta.fileName}
-      Token: ${token}
-      Thời gian: ${new Date().toLocaleString()}
-    `;
+Tên file: ${mockMeta.fileName}
+Token: ${token}
+Thời gian: ${new Date().toLocaleString()}
+        `;
         const blob = new Blob([fakeContent], { type: "text/plain" });
         const url = URL.createObjectURL(blob);
+
         const a = document.createElement("a");
         a.href = url;
         a.download = mockMeta.fileName;
@@ -54,7 +105,7 @@ export default function Page({ params }: { params: { token: string } }) {
     };
 
     const humanFileSize = (bytes: number) => {
-        const units = ["B", "KB", "MB", "GB", "TB"];
+        const units = ["B", "KB", "MB", "GB"];
         let i = 0;
         while (bytes >= 1024 && i < units.length - 1) {
             bytes /= 1024;
@@ -63,33 +114,12 @@ export default function Page({ params }: { params: { token: string } }) {
         return `${bytes.toFixed(1)} ${units[i]}`;
     };
 
-    // Preview giả lập theo loại file
+    // --- UI Preview ---
     const renderPreview = () => {
-        const type = mockMeta.mimeType;
-
-        if (type.startsWith("image/")) {
-            return (
-                <div className="bg-gray-200 border-2 border-dashed rounded-xl w-full h-96 flex items-center justify-center text-gray-500">
-                    <span>📷 Preview ảnh (kích thước thật: 1920×1080)</span>
-                </div>
-            );
-        }
-
-        if (type.startsWith("video/")) {
-            return (
-                <div className="bg-black rounded-xl w-full h-96 flex items-center justify-center text-white">
-                    <span className="text-6xl">▶️</span>
-                    <p className="ml-4 text-xl">Video preview sẽ hiện ở đây</p>
-                </div>
-            );
-        }
-
-        // PDF, text, office...
         return (
             <div className="bg-gray-50 border-2 border-dashed rounded-xl w-full h-96 flex flex-col items-center justify-center text-gray-600 p-8">
                 <div className="text-8xl mb-4">📄</div>
                 <p className="text-lg font-medium">Preview không khả dụng</p>
-                <p className="text-sm">File PDF, Word, Excel... sẽ được tải về máy</p>
             </div>
         );
     };
@@ -97,20 +127,23 @@ export default function Page({ params }: { params: { token: string } }) {
     return (
         <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 flex items-start justify-center py-12 px-4">
             <div className="w-full max-w-5xl">
-                {/* Header */}
+
+                {/* HEADER */}
                 <div className="text-center mb-10">
-                    <h1 className="text-4xl font-bold text-gray-800 mb-2">File đã được chia sẻ với bạn</h1>
-                    <p className="text-gray-600">Nhấn nút tải xuống để nhận file</p>
+                    <h1 className="text-4xl font-bold text-gray-800 mb-2">
+                        File được chia sẻ với bạn
+                    </h1>
+                    <p className="text-gray-600">Token: {token}</p>
                 </div>
 
-                {/* Thông báo thành công */}
+                {/* SUCCESS */}
                 {downloaded && (
                     <div className="mb-6 p-4 bg-green-100 border border-green-300 text-green-800 rounded-lg text-center font-medium">
-                        ✅ Đã bắt đầu tải file thành công!
+                        Đang tải file...
                     </div>
                 )}
 
-                {/* Lỗi */}
+                {/* ERROR */}
                 {error && (
                     <div className="mb-6 p-4 bg-red-100 border border-red-300 text-red-800 rounded-lg">
                         {error}
@@ -118,71 +151,96 @@ export default function Page({ params }: { params: { token: string } }) {
                 )}
 
                 <div className="grid md:grid-cols-2 gap-8">
-                    {/* Bên trái: Preview */}
+
+                    {/* LEFT PREVIEW */}
                     <div className="order-2 md:order-1">
                         <div className="bg-white rounded-2xl shadow-xl overflow-hidden">
-                            <div className="bg-gradient-to-r from-blue-600 to-indigo-600 text-white p-4 text-center font-medium">
+                            <div className="bg-indigo-600 text-white p-4 text-center font-medium">
                                 Xem trước file
                             </div>
                             <div className="p-6">{renderPreview()}</div>
                         </div>
                     </div>
 
-                    {/* Bên phải: Thông tin + Tải xuống */}
+                    {/* RIGHT PANEL */}
                     <div className="order-1 md:order-2">
                         <div className="bg-white rounded-2xl shadow-xl p-8">
+
                             <h2 className="text-2xl font-bold text-gray-800 mb-2">
                                 {mockMeta.fileName}
                             </h2>
-                            <p className="text-gray-600 mb-6">
-                                <span className="font-medium">{humanFileSize(mockMeta.size)}</span> •{" "}
-                                {mockMeta.mimeType.split("/").pop()?.toUpperCase() || "File"}
+
+                            <p className="text-gray-600 mb-4">
+                                {humanFileSize(mockMeta.size)} • {mockMeta.mimeType}
                             </p>
 
-                            {mockMeta.expiresAt && (
-                                <div className="mb-4 text-sm">
-                                    <span className="text-gray-500">Hết hạn:</span>{" "}
-                                    <span className="font-medium text-red-600">
-                                        {new Date(mockMeta.expiresAt).toLocaleString("vi-VN")}
-                                    </span>
-                                </div>
-                            )}
+                            {/* USER BY */}
+                            <p className="text-sm text-gray-500 mb-4">
+                                👤 Uploaded by: <span className="font-medium">{mockMeta.uploadedBy}</span>
+                            </p>
 
-                            {/* Password input */}
-                            {mockMeta.passwordProtected && (
-                                <div className="mb-6">
-                                    <label className="block text-sm font-medium text-gray-700 mb-2">
-                                        🔒 File được bảo vệ bằng mật khẩu
-                                    </label>
-                                    <input
-                                        type="password"
-                                        value={password}
-                                        onChange={(e) => setPassword(e.target.value)}
-                                        placeholder="Nhập mật khẩu (gợi ý: 123456)"
-                                        className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
-                                    />
-                                </div>
-                            )}
-
-                            {/* Nút tải */}
+                            {/* COPY LINK */}
                             <button
-                                onClick={download}
-                                disabled={loading}
-                                className={`w-full py-4 px-6 rounded-xl font-semibold text-white transition-all ${loading
-                                    ? "bg-gray-400 cursor-not-allowed"
-                                    : "bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 shadow-lg hover:shadow-xl transform hover:-translate-y-0.5"
-                                    }`}
+                                onClick={copyLink}
+                                className="mb-4 w-full py-3 rounded-lg bg-gray-200 hover:bg-gray-300 transition"
                             >
-                                {loading ? "Đang chuẩn bị file..." : "⬇️ Tải xuống ngay"}
+                                📋 Copy Link Chia Sẻ
                             </button>
 
-                            {/* Token info nhỏ nhỏ */}
-                            <div className="mt-6 text-center text-xs text-gray-500">
-                                Token: <code className="bg-gray-100 px-2 py-1 rounded">{token}</code>
-                            </div>
+                            {/* EXPIRES */}
+                            {isExpired && (<p className="text-sm text-gray-600 mb-6">
+                                Hết hạn:{" "}
+                                <span className="font-medium text-red-600">
+                                    {new Date(mockMeta.expiresAt).toLocaleString("vi-VN")}
+                                </span>
+                            </p>)}
+
+                            {/* 3 TRẠNG THÁI FILE */}
+                            {isExpired && (
+                                <div className="p-4 bg-red-100 text-red-700 rounded-lg font-medium text-center">
+                                    🔴 File đã hết hạn và bị xóa.
+                                </div>
+                            )}
+
+                            {isPending && (
+                                <div className="p-4 bg-yellow-100 text-yellow-700 rounded-lg font-medium text-center">
+                                    🟡 Chưa đến thời gian mở khóa<br />
+                                    <div className="text-lg mt-2">{countdown}</div>
+                                </div>
+                            )}
+
+                            {isActive && (
+                                <>
+                                    {/* PASSWORD */}
+                                    {mockMeta.passwordProtected && (
+                                        <div className="mb-6">
+                                            <input
+                                                type="password"
+                                                value={password}
+                                                onChange={(e) => setPassword(e.target.value)}
+                                                className="w-full px-4 py-3 border rounded-lg focus:ring-2"
+                                                placeholder="Nhập mật khẩu..."
+                                            />
+                                        </div>
+                                    )}
+
+                                    {/* DOWNLOAD BTN */}
+                                    <button
+                                        onClick={download}
+                                        disabled={loading}
+                                        className={`w-full py-4 px-6 rounded-xl text-white font-semibold transition-all 
+                                            ${loading ? "bg-gray-400" : "bg-indigo-600 hover:bg-indigo-700"}
+                                        `}
+                                    >
+                                        {loading ? "Đang chuẩn bị..." : "⬇️ Tải xuống"}
+                                    </button>
+                                </>
+                            )}
+
                         </div>
                     </div>
                 </div>
+
             </div>
         </div>
     );
