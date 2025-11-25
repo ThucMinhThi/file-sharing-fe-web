@@ -3,7 +3,7 @@
 import { useState, useEffect, Suspense } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { toast } from "sonner";
-import { authApi } from "@/lib/api/auth";
+import { loginTotp } from "@/lib/api/auth";
 import { setAccessToken, setCurrentUser } from "@/lib/api/helper";
 import LoginTotpForm, {
   LoginTotpFormData,
@@ -22,7 +22,7 @@ function LoginTotpPageContent() {
   useEffect(() => {
     if (!email) {
       toast.error("No email provided for TOTP verification.");
-      router.push("/auth/login");
+      router.push("/login");
     }
   }, [email, router]);
 
@@ -34,7 +34,7 @@ function LoginTotpPageContent() {
     e.preventDefault();
     setVerifying(true);
     try {
-      const res = await authApi.loginTotp({
+      const res = await loginTotp({
         email,
         code: formData.code,
       });
@@ -43,7 +43,7 @@ function LoginTotpPageContent() {
         setAccessToken(res.accessToken);
         setCurrentUser(res.user);
         toast.success("Đăng nhập thành công!");
-        router.push("/");
+        router.push("/dashboard");
       } else {
         toast.error("Invalid credentials. Please try again.");
       }

@@ -1,73 +1,43 @@
 import { authClient, adminClient } from "./client";
+import { clearAuth } from "./helper";
+import { 
+  LoginRequest, 
+  LoginResponse, 
+  RegisterRequest, 
+  RegisterSuccessResponse, 
+  TotpSetupResponse, 
+  TotpVerifyRequest, 
+  TotpVerifyResponse, 
+  TotpLoginRequest, 
+  LoginSuccessResponse,
+  UserProfileResponse,
+  ChangePasswordRequest
+} from "../components/schemas";
 
-export type LoginRequest = {
-  email: string;
-  password: string;
-};
+export const login = (payload: LoginRequest) =>
+  authClient.post<LoginResponse>("/auth/login", payload);
+  
+export const register = (payload: RegisterRequest) =>
+  authClient.post<RegisterSuccessResponse>("/auth/register", payload);
 
-export type RegisterRequest = {
-  username: string;
-  email: string;
-  password: string;
-  role?: string; // Why allow users to register with role?
-};
+export const setupTotp = () => 
+  adminClient.post<TotpSetupResponse>("/auth/totp/setup", {});
 
-export type User = {
-  id: string;
-  username: string;
-  email: string;
-};
+export const verifyTotp = (payload: TotpVerifyRequest) =>
+  adminClient.post<TotpVerifyResponse>("/auth/totp/verify", payload);
 
-export type TOTPSetup = {
-  secret: string;
-  qrCode: string;
-};
+export const loginTotp = (payload: TotpLoginRequest) =>
+  authClient.post<LoginSuccessResponse>("/auth/login/totp", payload);
 
-export type LoginSuccessResponse = {
-  accessToken: string;
-  user: User;
-};
+export const getUserProfile = () => 
+  adminClient.get<UserProfileResponse>("/user");
 
-export type RegisterSuccessResponse = {
-  message: string;
-  userId: string;
-  totpSetup?: TOTPSetup;
-};
+export const disableTotp = (code: string) =>
+  adminClient.post<any>("/auth/totp/disable", { code });
 
-export type TOTPRequiredResponse = {
-  requireTOTP: boolean;
-  message?: string;
-};
+export const changePassword = (payload: ChangePasswordRequest) =>
+  adminClient.post<any>("/auth/password/change", payload);
 
-export type LoginResponse = LoginSuccessResponse | TOTPRequiredResponse;
-
-export interface TotpSetupResponse {
-  message: string;
-  totpSetup: TOTPSetup;
-}
-
-export interface TotpVerifyRequest {
-  code: string;
-}
-
-export interface TotpVerifyResponse {
-  message: string;
-  totpEnabled: boolean;
-}
-
-export interface TotpLoginRequest {
-  email: string;
-  code: string;
-}
-
-export const authApi = {
-  login: (payload: LoginRequest) =>
-    authClient.post<LoginResponse>("/auth/login", payload),
-  register: (payload: RegisterRequest) =>
-    authClient.post<RegisterSuccessResponse>("/auth/register", payload),
-  setupTotp: () => adminClient.post<TotpSetupResponse>("/auth/totp/setup", {}),
-  verifyTotp: (payload: TotpVerifyRequest) =>
-    adminClient.post<TotpVerifyResponse>("/auth/totp/verify", payload),
-  loginTotp: (payload: TotpLoginRequest) =>
-    authClient.post<LoginSuccessResponse>("/auth/login/totp", payload),
+export const logout = () => {
+  clearAuth();
 };

@@ -6,7 +6,7 @@ import { toast } from "sonner";
 import RegisterForm, {
   RegisterFormData,
 } from "@/components/auth/RegisterForm";
-import { authApi } from "@/lib/api/auth";
+import { register } from "@/lib/api/auth";
 
 export default function RegisterPage() {
   const [formData, setFormData] = useState<RegisterFormData>({
@@ -29,14 +29,14 @@ export default function RegisterPage() {
       return;
     }
     try {
-        const res = await authApi.register({
+        const res = await register({
           username: formData.username,
           email: formData.email,
           password: formData.password,
         });
 
         toast.success("Đăng ký thành công! Vui lòng đăng nhập.");
-        router.push("/auth/login");
+        router.push("/login");
     } catch (err: any) {
         const msg =
             err?.response?.data?.message || "Sai thông tin đăng nhập. Vui lòng thử lại.";

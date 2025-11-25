@@ -28,7 +28,7 @@ export default function Page() {
 
     // Copy link
     const copyLink = () => {
-        const link = `${window.location.origin}/public/f/${token}`;
+        const link = `${window.location.origin}/f/${token}`;
         navigator.clipboard.writeText(link);
         alert("Đã copy link chia sẻ!");
     };
