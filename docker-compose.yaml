@@ -6,7 +6,7 @@ services:
     ports:
       - "3000:3000"
     environment:
-      - NEXT_PUBLIC_API_URL=http://backend:8080/api
+      - NEXT_PUBLIC_API_URL=http://127.0.0.1:8080/api
     depends_on:
       - backend
     networks:
@@ -17,7 +17,7 @@ services:
       context: ./mockbe
       dockerfile: backend.Dockerfile
     ports:
-      - "8080:8080"
+      - "18080:8080"
     networks:
       - app-network
 

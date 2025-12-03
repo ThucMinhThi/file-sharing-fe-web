@@ -11,7 +11,7 @@ app = Flask(__name__)
 # cors for localhost:3000 make request
 CORS(
     app,
-    resources={r"/api/*": {"origins": "http://localhost:3000"}},
+    resources={r"/api/*": {"origins": "*"}},
     supports_credentials=True,
 )
 
@@ -406,18 +406,12 @@ def change_password():
     
     return jsonify({"message": "Password changed successfully"}), 200
 
-
-@app.get("/api/user")
-def get_user_profile():
-    """
-    Mock endpoint to get a user's full profile, including files.
-    This corresponds to the UserProfileResponse in the frontend.
-    Requires Authorization: Bearer <token>.
-    """
+@app.get("/api/files/my")
+def get_user_files():
     token, user = get_current_user()
     if not user:
         return jsonify({"message": "Unauthorized"}), 401
-
+    
     user_email = user["email"]
 
     # In a real app, this would be a database query. Here, we filter the in-memory dict.
@@ -468,10 +462,26 @@ def get_user_profile():
 
     return jsonify(
         {
-            "user": serialize_user(user),  # The basic User object
             "files": serialized_files,
             "pagination": pagination,
             "summary": summary,
+        }
+    ), 200
+
+@app.get("/api/user")
+def get_user_profile():
+    """
+    Mock endpoint to get a user's full profile, including files.
+    This corresponds to the UserProfileResponse in the frontend.
+    Requires Authorization: Bearer <token>.
+    """
+    token, user = get_current_user()
+    if not user:
+        return jsonify({"message": "Unauthorized"}), 401
+
+    return jsonify(
+        {
+            "user": serialize_user(user),
         }
     ), 200
 
