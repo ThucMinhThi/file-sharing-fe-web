@@ -60,33 +60,12 @@ export default function Dashboard() {
   const router = useRouter();
 
   useEffect(() => {
-    const fetchInitialProfile = async () => {
-      try {
-        const userRes = await getUserProfile();
-        setUserProfile((prev) => ({
-          ...prev,
-          user: userRes.user,
-          files: prev?.files || [],
-          summary: prev?.summary || { activeFiles: 0, pendingFiles: 0, expiredFiles: 0, deletedFiles: 0 },
-          pagination: prev?.pagination || { currentPage: 1, totalPages: 1, totalFiles: 0, limit: 20 },
-        }));
-        setCurrentUser(userRes.user);
-      } catch (err: any) {
-        if (err.message.includes("Unauthorized")) {
-          router.push("/login");
-        } else {
-          setError("Failed to fetch user profile.");
-        }
-      }
-    };
-
-    fetchInitialProfile();
-  }, [router]);
-  
-  useEffect(() => {
-    const fetchFiles = async () => {
+    const fetchProfileAndFiles = async () => {
       setIsLoading(true);
       try {
+        const userRes = await getUserProfile();
+        setCurrentUser(userRes.user);
+
         const filesRes = await getUserFiles({
           status: statusFilter,
           page: currentPage,
@@ -94,25 +73,28 @@ export default function Dashboard() {
           sortBy,
           order: sortOrder,
         });
-        setUserProfile((prev) => ({
-          ...prev,
-          user: prev?.user,
+        
+        setUserProfile({
+          user: userRes.user,
           files: filesRes.files,
           summary: filesRes.summary,
           pagination: filesRes.pagination,
-        }));
+        });
         setPagination(filesRes.pagination);
+
       } catch (err: any) {
-        setError("Failed to fetch files.");
+        if (err.message.includes("Unauthorized")) {
+          router.push("/login");
+        } else {
+          setError("Failed to fetch dashboard data.");
+        }
       } finally {
         setIsLoading(false);
       }
     };
 
-    if (userProfile?.user) {
-      fetchFiles();
-    }
-  }, [statusFilter, sortBy, sortOrder, currentPage, userProfile?.user, pagination.limit, router]);
+    fetchProfileAndFiles();
+  }, [router, statusFilter, sortBy, sortOrder, currentPage, pagination.limit]);
 
   const handleDisableTotp = async () => {
     if (!totpCode) {
@@ -124,13 +106,17 @@ export default function Dashboard() {
       await disableTotp(totpCode);
       // Refresh profile to show updated TOTP status
       const userRes = await getUserProfile();
-      setUserProfile((prev) => ({
-        ...prev,
-        user: userRes.user,
-        files: prev?.files || [],
-        summary: prev?.summary || { activeFiles: 0, pendingFiles: 0, expiredFiles: 0, deletedFiles: 0 },
-        pagination: prev?.pagination || { currentPage: 1, totalPages: 1, totalFiles: 0, limit: 20 },
-      }));
+      setUserProfile((prev) => {
+        const base = prev ? { ...prev } : {
+          files: [],
+          summary: { activeFiles: 0, pendingFiles: 0, expiredFiles: 0, deletedFiles: 0 },
+          pagination: { currentPage: 1, totalPages: 1, totalFiles: 0, limit: 20 },
+        };
+        return {
+          ...base,
+          user: userRes.user,
+        };
+      });
       setShowTotpInput(false);
       setTotpCode("");
       toast.success("TOTP has been disabled successfully.");
@@ -210,7 +196,7 @@ export default function Dashboard() {
     return <div className="text-center text-red-500">{error}</div>;
   }
 
-  if (!userProfile) {
+  if (!userProfile || !userProfile.user) {
     return null; // or a fallback UI
   }
 
