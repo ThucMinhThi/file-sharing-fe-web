@@ -1,20 +1,7 @@
 import axios from "axios";
+import type { FileInfo } from "@/lib/components/schemas";
 
 const apiBase = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080/api";
-
-export interface FileInfo {
-    id: string;
-    fileName: string;
-    fileSize?: number;
-    mimeType?: string;
-    shareToken: string;
-    status: "active" | "pending" | "expired";
-    isPublic: boolean;
-    hasPassword: boolean;
-    availableFrom?: string;
-    availableTo?: string;
-    createdAt?: string;
-}
 
 /*
  * Lấy thông tin file theo share token

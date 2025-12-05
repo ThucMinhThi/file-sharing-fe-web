@@ -8,8 +8,8 @@ import {
     loadFilePreview,
     canPreviewFile,
     formatFileSize,
-    type FileInfo,
-} from "@/lib/services/fileService";
+} from "@/lib/api/fileService";
+import type { FileInfo } from "@/lib/components/schemas";
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 import { Card } from "@/components/ui/Card";
