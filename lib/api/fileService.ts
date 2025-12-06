@@ -1,5 +1,6 @@
 import axios from "axios";
 import type { FileInfo } from "@/lib/components/schemas";
+import { getAccessToken } from "./helper";
 
 const apiBase = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080/api";
 
@@ -12,12 +13,12 @@ export async function getFileByToken(token: string): Promise<FileInfo> {
         const publicFile = tokenRes.data.file;
 
         // Try to get detailed info if user is logged in
-        const authToken = typeof window !== 'undefined' ? localStorage.getItem("token") : null;
-        
+        const authToken = typeof window !== 'undefined' ? getAccessToken() : null;
+
         if (authToken) {
             try {
-                const config = { 
-                    headers: { Authorization: `Bearer ${authToken}` } 
+                const config = {
+                    headers: { Authorization: `Bearer ${authToken}` }
                 };
                 const infoRes = await axios.get(`${apiBase}/files/info/${publicFile.id}`, config);
                 return infoRes.data.file;
@@ -59,7 +60,7 @@ export async function downloadFile(
             config.headers["X-File-Password"] = password;
         }
 
-        const authToken = typeof window !== 'undefined' ? localStorage.getItem("token") : null;
+        const authToken = typeof window !== 'undefined' ? getAccessToken() : null;
         if (authToken) {
             config.headers.Authorization = `Bearer ${authToken}`;
         }
@@ -128,7 +129,7 @@ export async function loadFilePreview(
             config.headers["X-File-Password"] = password;
         }
 
-        const authToken = typeof window !== 'undefined' ? localStorage.getItem("token") : null;
+        const authToken = typeof window !== 'undefined' ? getAccessToken() : null;
         if (authToken) {
             config.headers.Authorization = `Bearer ${authToken}`;
         }
