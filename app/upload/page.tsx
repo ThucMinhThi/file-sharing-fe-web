@@ -56,6 +56,13 @@ export default function UploadPage() {
 	const [isSubmitting, setIsSubmitting] = useState(false);
 	const [uploadResult, setUploadResult] = useState<FileUploadResponse | null>(null);
 
+	const shareLink = useMemo(() => {
+		if (uploadResult?.file?.shareToken && typeof window !== "undefined") {
+			return `${window.location.origin}/f/${uploadResult.file.shareToken}`;
+		}
+		return uploadResult?.file?.shareLink || "";
+	}, [uploadResult]);
+
 	const acceptAttribute = useMemo(
 		() => ACCEPTED_EXTENSIONS.map((ext) => `.${ext}`).join(","),
 		[]
@@ -215,7 +222,6 @@ export default function UploadPage() {
 	};
 
 	const handleCopyShareLink = async () => {
-		const shareLink = uploadResult?.file?.shareLink;
 		if (!shareLink) {
 			return;
 		}
@@ -504,14 +510,14 @@ export default function UploadPage() {
 											Share token: <span className="font-mono">{uploadResult.file.shareToken}</span>
 										</p>
 									)}
-									{uploadResult.file?.shareLink && (
+									{shareLink && (
 										<div className="mt-3 rounded-lg bg-white px-4 py-3 text-sm text-gray-700 border border-green-100 break-all">
-											{uploadResult.file.shareLink}
+											{shareLink}
 										</div>
 									)}
 								</div>
 							</div>
-							{uploadResult.file?.shareLink && (
+							{shareLink && (
 								<button
 									type="button"
 									onClick={handleCopyShareLink}

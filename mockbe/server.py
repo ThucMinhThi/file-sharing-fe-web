@@ -1,9 +1,10 @@
-from flask import Flask, jsonify, request
+from flask import Flask, jsonify, request, send_file
 from flask_cors import CORS
 
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 import uuid
 import base64
+import io
 from werkzeug.utils import secure_filename
 
 app = Flask(__name__)
@@ -18,12 +19,6 @@ CORS(
 # Mock "database"
 
 # Users stored in memory:
-# users[email] = {
-#   "email": str,
-#   "password": str,
-#   "totp_enabled": bool,
-#   "totp_secret": str | None,
-# }
 users = {
     "jitensha@hcmut.edu.vn": {
         "id": str(uuid.uuid4()),
@@ -67,8 +62,16 @@ MOCK_TOTP_CODE = "123456"
 
 
 # In-memory file store for uploaded files (mock)
-# files[file_id] = { id, filename, size, ownerEmail, isPublic, passwordProtected, availableFrom, availableTo, sharedWith, shareLink, totpEnabled }
+# files[file_id] = { id, filename, size, ownerEmail, isPublic, passwordProtected, password, availableFrom, availableTo, sharedWith, shareLink, totpEnabled }
 files = {}
+
+# Statistics
+# file_stats[file_id] = { downloadCount: int, uniqueDownloaders: set(emails), lastDownloadedAt: datetime }
+file_stats = {}
+
+# Download History
+# download_history[file_id] = [ { id, downloader: {username, email} | null, downloadedAt, downloadCompleted } ]
+download_history = {}
 
 
 # Helper functions
@@ -186,12 +189,11 @@ def login():
     global totp_temp_sessions
     if user["totp_enabled"]:
         # Require TOTP step
-        # temp_token = create_token("temp")
         totp_temp_sessions[email] = email
         return jsonify(
             {
                 "requireTOTP": True,
-                # "tempToken": temp_token,
+                "cid": str(uuid.uuid4()),
                 "message": "TOTP required (mock)",
             }
         ), 200
@@ -201,7 +203,6 @@ def login():
         sessions[token] = email
         return jsonify(
             {
-                # "requireTOTP": False,
                 "accessToken": token,
                 "user": serialize_user(user),
                 "message": "Login successful (mock)",
@@ -213,38 +214,86 @@ def login():
 def login_totp():
     """
     Mock TOTP validation after /auth/login.
-    Body: { "tempToken": string, "code": string }
+    Body: { "cid": string, "code": string }
     For this mock, valid TOTP code is always "123456".
     """
     data = request.get_json(silent=True) or {}
+    # In a real app, we would use cid to lookup the pending session.
+    # Here we cheat and just check if there is *any* pending session for simplicity or rely on context if we had it.
+    # But wait, we keyed totp_temp_sessions by email in login().
+    # The frontend sends cid. We need to map cid to email?
+    # For this mock, we'll just rely on the user providing the email in the body OR
+    # since the mock is simple, we might iterate.
+    # BUT, the spec says `cid` and `code` are in body.
+    # Let's just assume for this mock that we can find the user.
+    # To make it robust without changing too much, let's just say:
+    # WE NEED EMAIL to know who is logging in.
+    # If the frontend follows the spec, it sends cid.
+    # We will store cid -> email mapping.
+    
+    # Quick fix for mock:
+    # let's change login() to store cid -> email
+    pass 
+
+# Re-implementing login to support CID properly for totp
+@app.post("/api/auth/login")
+def login_v2():
+    data = request.get_json(silent=True) or {}
     email = data.get("email")
+    password = data.get("password")
+
+    user = users.get(email)
+    if not user or user["password"] != password:
+        return jsonify({"message": "Invalid email or password"}), 401
+    
+    global totp_temp_sessions
+    if user["totp_enabled"]:
+        cid = str(uuid.uuid4())
+        totp_temp_sessions[cid] = email # Map CID to email
+        return jsonify(
+            {
+                "requireTOTP": True,
+                "cid": cid,
+                "message": "TOTP required (mock)",
+            }
+        ), 200
+    else:
+        token = create_token("token")
+        sessions[token] = email
+        return jsonify(
+            {
+                "accessToken": token,
+                "user": serialize_user(user),
+                "message": "Login successful (mock)",
+            }
+        ), 200
+
+@app.post("/api/auth/login/totp")
+def login_totp_v2():
+    data = request.get_json(silent=True) or {}
+    cid = data.get("cid")
     code = data.get("code")
 
-    if not email or not code:
-        return jsonify({"error": "email and code are required"}), 400
-    email = totp_temp_sessions.get(email)  # Should be a temp session token
+    if not cid or not code:
+        return jsonify({"error": "cid and code are required"}), 400
+    
+    email = totp_temp_sessions.get(cid)
     if not email:
-        return jsonify({"error": "Invalid or expired tempToken"}), 401
+        return jsonify({"error": "Invalid or expired session"}), 401
 
     if code != MOCK_TOTP_CODE:
         return jsonify({"error": "Invalid TOTP code (mock: use 123456)"}), 401
 
-    # Successful TOTP -> create real session token
     token = create_token("token")
     sessions[token] = email
-    del totp_temp_sessions[email]
+    del totp_temp_sessions[cid]
 
     user = users.get(email)
 
     return jsonify(
         {
-            # "requireTOTP": False,
             "accessToken": token,
-            "user": {
-                "id": user["id"],
-                "email": user["email"],
-                "username": user["username"],
-            },
+            "user": serialize_user(user),
             "message": "Login successful (mock)",
         }
     ), 200
@@ -252,20 +301,14 @@ def login_totp():
 
 @app.post("/api/auth/totp/setup")
 def totp_setup():
-    """
-    Mock TOTP setup.
-    Requires Authorization: Bearer <token>.
-    Returns a fake secret and QR code string (base64 placeholder).
-    """
     token, user = get_current_user()
     if not user:
         return jsonify({"error": "Unauthorized"}), 401
 
-    # For mock: just generate a fake secret and QR placeholder
     secret = "MOCK-SECRET-SECRET"
-    qr_code = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAPoAAAD6CAYAAACI7Fo9AAAQAElEQVR4Aeydi3XcNhOFedSF0kZchqIypDJilSGXIbsMpYwkZeT3l5i/9VjOHS2GWJC8PhmvxQHm8YF342NguVe//vrrP0eyp6enf9SvCh7Pz89hmj///FNyf3x8DGNknNTR2s/NzY1MRa2tee7u7mSeigHcA621bm3+1eRfJmACuydgoe9+id2gCUyThe67wAQOQGBNoR8An1s0gW0QsNC3sU6u0gSaCFjoTfg82QS2QcBC38Y6uUoTaCIghX59fT1930cdzRbraaLxY3JFv3/99df09evXRfv27dtiD3P+73u1Pypa94U8c85Tr7/99ttiH3OP9Htq7strmS7meC2vmTxqjGLysq9L/xmNqn6k0Gn48+fP0+cNGDekajjjr+gVIT88PExLxo2s8sA+U2/rmLu7u3B9uZGX+piv//LLL2EMelU35B9//LHIa86TeW3lwXzFhH5Gscx9IoVO0zYTMIFtE7DQt71+rt4EUgQs9PeYfMUEdkfAQt/dkrohE3hPwEJ/z8RXTGB3BCz03S2pGzKB9wQs9PdM1rzi2CZwEQIlQv/y5ct0f3+/unEo4yKU3iRlv1f1y5g301b5kb3cqBb8qyQ+Iyi1PD4+Tkv2+++/y6jsby/Nn6/LIEUDIu5VPphVlFsidG7qHlbRcEUM3nBUvxV5MjFUHX///XcmTJcxHOyIjEM3qhAO3UQx8KkYFf7MPaDWJuOvWr8SoVeAcwwTMIH1CFjo67HtHdn5TGCRgIW+iMYOE9gPAQt9P2vpTkxgkYCFvojGDhPYDwELfT9ruWYnjr1xAhb6GQvINhDbPJGdEfbdFLZwlL2bdKELqk78FaWx3USsyCry7C2GhX7GirJXy4MjImPMGaFfTeHhFbe3t1Nk3PivJl3oh0ytiLO1PA5nRTzwtebY43wLfY+r6p5M4A0BC/0NEP/YnYATdiBgoXeA7BQmcGkCFvqlV8D5TaADAQu9A2SnMIFLE7DQL70Czr8mAcf+QcBC/wHCLyawZwIW+kqry5ce8JCEyNgTjozSovn4GNNqnAeI6sDXmqNqfoZrVa49xbHQV1pNvjUGIS4ZB2oQUGSUtjR/vs7pPMa1GIddojrwt8SvnAu3ufel18p8e4lloe9lJd1HbwKbymehb2q5XKwJnEfAQj+Pm2eZwKYIWOibWi4XawLnEbDQz+PmWSawJoHy2BZ6OVIHNIHxCFjo462JKzKBcgIlQucbNp6enqa1jSe7lBM4IyAP3mefPDLGnBH61RQOskQ58PFNHhF3vr3kVdATP/Rav4eHh4mal0z1Qp88aGNp/nz9RIurXKKetS2zfpnmSoSOAHtYpqEeY3hSCjdcZBV1RPFnHwdmIvaZOqL5lT7FLZNLxYBLpufWMZlaK8a01jnPfyH0+ZJfTcAE9kbAQt/birofEzhBwEI/AcWXTGBvBCz0va2o+zGBEwQ6Cf1EZl8yARPoRsBC74baiUzgcgSk0NmuYE94K1aBUvVKDj4XHRljVJxoPj62zogzgqle2PYaoc6qGuhH9TyKH42qvqXQaeb+/n7agvHwBNVwxq96hQkHGSKjligO/mg+Pg6AZOpdeww3fdQLvpEeTlHBg8M99LUF435UPUuhqwCX97sCEzABRcBCV4TsN4EdELDQd7CIbsEEFAELXRGy3wR2QMBCDxfRThPYBwELfR/r6C5MICRgoYd47DSBfRC44qEDRzIOorQuHfuWPCQhMg67RFyjubOPB0+oWtmPn8efeiVGVAc+9slPzZ2vsaes6tiSn3uAvo9kVxzKOJLxMIDWm5KTSBwQiUwxvb6+nqL5+MijamVcZMRQtUTz8fHGpurYkp97QDHZm99/dd/SHepaTeBMAhb6meA8zQS2RMBC39JquVYTOJOAhX4muLGnuToTeE3AQn/Nwz+ZwC4JWOi7XFY3ZQKvCVjor3n4JxPYJYGrT58+Ta2m9lk5kNGag/nEiVaBOhgXGQdIohj4np+fp8g4aMG4FmMvN8qR9XEwJ6ojw+Tu7i7sl28jmf7/6/QfOLgTccfHwzSivqiDcZGxr3+6gvxV7oEoBz645SNediQHm6g5Mv8f/bJr5Owm0IWAhd4Fs5OYwGUJWOiX5e/sJtCFgIXeBbOT5Ah41FoELPS1yDquCQxEwEIfaDFcigmsRcBCX4us45rAQARKhM6eI3uTS8be583NzdRqxFnKMV9XOdi/VvznWEuvfMZb5WHPf2n+fF3VkfHzuWlVi/KrvXjqUDEy/sz6kSsyHhqhcs18X79+neafq9Zvjrf0ii6iXvAtzX15nXGRZZiUCJ3DEjyFZMkomk39ViPOUg6us4AqB1AiaPiIFRkiVnm4qaMYMCNXq3HIRNWi/OrND7+KkfGr9YOZ4oHIVa6IO76K9SOOsozQuQ+iOBkmvNkrJiVCV4tjvwmYwGUJWOiX5e/sJtCFgIXeBbOT7JvA+N1Z6OOvkSs0gWYCFnozQgcwgfEJWOjjr5ErNIFmAhZ6M0IHMIE1CdTEvuJhAK2W2Zu+v7+fWo198qht9kdVjszeZpQDHzFUHpgorioG+87ki4z9UxVnFD97/oqJ8sM14oFPxaAOxkXGGBVH+Ymv2Kt7mhgVdgW4VlOF0AziaLWKPLwZqDjKn+lHMSWH4kEexkWmYozkV0wyfg7vRDzwqTgVMVQO/NSi+DOmh/mv7j0oO4cJXJiAhX7hBXB6E+hB4LTQe2R2DhMwgW4ELPRuqJ3IBC5HwEK/HHtnNoFuBCz0bqidyAQuR0AKne0oZTy4IG3X19OpsRkEp+Z99NqW8iju+NkqUgxUz2p+xq9yVPnpWZnKpebjVzGq/BVsqVeZFDr7gLe3t1NkfPCdwx0txgEFBY8DCi05mEutKg/jWm3eR13KhUBVDsZE3PHxrTFRHA7ULNUwX2dMFCPjy6zfnK/llQc10HdkKn7mnmaMilPhV/c0a6PyZJhIoask9puACYxPwEIff41coQk0E9iX0JtxOIAJ7JOAhb7PdXVXJvCKgIX+Cod/MIF9ErDQ97mu7soEXhGw0F/hCH6wywQ2TEAKnf1g9kgjY9NfMWCvL7KKfUsODUQ58DFG1ar81EqstY08qhZVAzGitcNXsX7USazIVK3s1xNnBKMWVa+qM6MdFYP7VdWReW6BFDqHNqLFw8eYqOBMsdyQUYyMj4YVlIo8mX5UHRl/pla+ySOKRQzWKLKK9WN9ohz4qCWqlV6IM4JRS1QrbwSqzozQFfuqe1oKXTVjvwmYwPgELPQR1sg1mMDKBCz0lQE7vAmMQMBCH2EVXIMJrEzAQl8ZsMObwAgELPQRVmHNGhzbBL4TsNC/Q/B/JrB3At2E/vT0NLXaw8PDxIMjlowP6asc7EsuzZ+v91p0VWvGrw67sOc/97X0yv52a8/sKy/Fn6+r9eEhDK11MH/Ot/TKfcS4VluKP19nH17l4Jtc5vGnXvGrGBl/F6FzKKDCuGkR6pJlcqgYxM6Aax2DQDP1qjGqDvpRpmJk/CoHftVzJk9mDLkiy8RQY6L4s0/FwK/uR8ZUWBehVxTqGAMScEmbIWChb2apXKgJnE/AQj+fnWeawGYIWOibWSoXagLnE7DQz2fnmWsScOxSAhZ6KU4HM4ExCUih88//7LO2WkX7fL5XmaqTOlpjsH1CnMjYSlJ5ovk9fZk1Vr3Qb0XNav0y7CvqoB/Vc0UelSPjp1ZVixQ64Nm0bzEOSqhCMn7icKhiyYCi6mTM0vz5uoqROQihasWf6bnHGA6QRD3T78xm6ZXDHq21Zu41xrTmycxnfZZ65TrfkJOJo8aoPORSxj2t8kihqwD2m8DmCBywYAv9gIvulo9HwEI/3pq74wMSsNAPuOhu+XgELPTjrbk7XpPAoLEt9EEXxmWZQCUBC72SpmOZwKAEugk92qfFx4MLFCP2HBm7ZJn9XvZhl+bP11UdGT+1zPGWXjNx1BiYqH3WCr+q4+bmZlJ5+Gz9FPzi4IeKUeHnyySCMv51Vawf9/TS2mevs77/FtT4Wxehc5oJgUXGGNVLNB8f8zk8EBljGBsZY1otio+P02itOZgf9VrlUwKlDsaofIyLLBND5cj4eUOJ6sDHGkWWuV8ZE8XI+IhBPf9aw29dhN5Qn6eagAkUELDQCyA6hAmMTsBCH32FXJ8JFBCw0AsgOoQJjE5ACn30BlyfCZiAJmCha0YeYQKbJyCFzpYH2xGR9aKQqYVtq8gyMSr6iXjho46ozqyvotZMDFVPJkbFGFVHxg971mBty/SbqUHFyfQjhc6+JBv/kTFGFVPh57BEVAcPP7i9vZ0iA2wUA19FrRx0INaS8eCCqM6sjxu7ot4oBjlUPRwwiWJU+cijalH+pTWpvp45mKPuae4jxY48qnYpdJWkxe+5JmACfQhY6H04O4sJXJSAhX5R/E5uAn0IWOh9ODuLCVyUwG6FflGqTm4CgxGw0AdbEJdjAmsQsNDXoOqYJjAYgSv2JSPjM7OqZh46wF5ei5EjqgMfYyJjj1zVQD/EiizK0dPH+QTVT0U97MFGPPCpPBVc2a8nV2SZz2crZnBV/WT8UZ34YJKJE43JMGFMFAOfFDo3AQMj46CKgqv8xAdOZKohTghV5KGWyHr5uCFVP/TcWs+3b9+miDt+lYObOoqBT60fImZcZORRtShm3K8qhvLTS1QnvkytKk8VE//VXZG23wR2QMBC38EiugUTUAQsdEXIfhPYAQELfbBFdDkmsAYBC30Nqo5pAoMRsNAHWxCXYwJrELDQ16DqmCYwGAEpdPYC2XdsNdU3h26enp6myNSeMXubqs7MnrCqlf3tqE58nD+IauHhCCpPhf8lk6V6WOPWXJn1e3h4mJZq4DrfXtJaR8/5rHNk7OereuiZ3peMB09EOfCx1740f74uhU6QVlPN4kfEyhgXWabOaH7Wxwk8VauqJZurdZyqA39rDuYrHvh50yHfkhFnK0Y/yjK9LLGYr6sc+BVXYkmhZ4r1GBMwgbEJWOhjr4+rM4ESAhZ6CUYHMYGxCVjoY6+PqzOBEgIWeglGBzGBsQlY6GOvj6szgRICuxM6e9ytpsiyXcHec2Rseag4yk+MKEfW18qD+arWjJ84yk7FeXmNrU0VI8ulddzLuk79OVPrqXlvr6k6uR/fznn7866Ezg3AN1+02ltIb38GPAcdIsvAfxv37c8c7olyZHzU2sqDb5V5W9s5P3P4I6olc8CEMVEMfBkurWPoRTHgsAr1RMabQRSH9VO1MiaKgW9XQqchmwmYwHsCFvp7Jr5iArsjYKHvbknd0EcIHGWshX6UlXafhyZgoR96+d38UQhY6EdZafd5aAIW+qGX382vSWCk2CVC56ED7LUuWWbPkb1Axo1gaoHYr1/qdb7OGBVnHtvyqvZhOXTTypQHRqgaqUPloZaICTFUHs4nqDxRjkqfqiPjp5+opgwTxQx/idA5GBBZ5qZH6BwQGcEi8PiAH/WLj3GRo6xyFwAABddJREFUZWIQR1mUAx83UitTBKrqyOShnsh4iILKQy2qnyhHlS/Tr6oTv6onw0Qxw18idFWs/SZgApclYKFflr+zm8BZBD46yUL/KDGPN4ENErDQN7hoLtkEPkrAQv8oMY83gQ0SsNA3uGgu2QQ+SuAjQv9obI83ARMYhMDV8/Pz1GqZfXLVLw8UaK2jar6qNePnYQNRPXyTSyaOGkOcKE/G12v9eIDCp0+fpiXDr/rN+DM9t47hG1JULRX3NPeRypPx+//oGUoeYwIbJ2Chb3wBXb4JZAiMIvRMrR5jAiZwJgEL/UxwnmYCWyJgoW9ptVyrCZxJwEI/E5ynmcCWCBxB6FtaD9dqAqsQuGIf9kjG55kVSR6kERmfEe7BjM/oq1or6sgwqcjD56IjrvhUHj4HrpgoP/2qPIxRcSr8qg78FXmueHrIkSwjHvVkEB4a0YNZptYvX75MrbUo8eBvzcF8hByx5Q2UcZFlmChhECPKgY+eVZwKv1q/zMMpMnX4r+4ZSh5jAhsnYKG3LaBnm8AmCFjom1gmF2kCbQQs9DZ+nm0CmyBgoW9imVykCbQRsNDb+K0527FNoIyAhV6G0oFMYFwCUug8lIAPv2/B+EaKHqgzTBjToxb2pUdYG/bIe/RbkYO1UcwYU5FLxVDrx8MreCBHZJwLUHmk0DkcQtNbMA5cqIYr/ORRPCryZGKoOnr5YZKpd4Qx1Kq49KozUwdCjixzik8KvVfDztOVgJMdjICFfrAFd7vHJGChH3Pd3fXBCFjoB1twt3tMAhb6Mdd9za4de0ACFvqAi+KSTKCaQInQ+ef9Hlbd/FK8il7Ylmy1ijqIsdTnfJ0xrZbpdc639mtrL5n5vT6vnmFFLarmEqHzQf3b29tpbaOZTOOtYyr64GkqPB2kxdjvba2FtVE8GNOah5tN9Uo/qpYKf2svmfkcYKmotSIGD69QNZcIvaJYxzCBBAEPOZOAhX4mOE8zgS0RsNC3tFqu1QTOJGChnwnO00xgSwQs9C2tlmtdk8CuY1vou15eN2cC/xGw0P/j4N9NYNcELPSVlpc9ZfY3W4zPILeWx9kDVQNjWvNk5qs66JcHLUTGwZxMrmgMnwGPclT5qEH1zJgeZqGvRJlv2FCLrPzc+K3lcZBF5WFMa57MfPXmR79KZIg0kysaw5uFylPhp4Yf7Kel115vshY6q2EzgZ0TsNB3vsBuzwQgYKFDwWYCOydgoe98gd3e7gmkGrTQU5g8yAS2TcBC3/b6uXoTSBGw0FOYPMgEtk3AQj+xfk9PT1NkVd8IE+XAx17uifKGvMQeOQ/biEzt17OnHM3Hx/mEUQBQT2TsnataeYBFFAO/ipHxnyn0TOjtjuFJKJFVdMahjSgHvoo8vWIgYmWqFjUfv4rRy8+bEvVElqklmo8vEyMzxkLPUPIYE9g4AQt94wvo8k0gQ8BCz1DyGBPYOIEBhb5xoi7fBAYkYKEPuCguyQSqCVjo1UQdzwQGJFAidLaK+Jzw2taLH5+Ljow6KnolTmS9uJInqiPjI0YFk4oYql62raL1zfp61EovKg/sGRdZidA/f/48PT4+rm7te8sRip8+DilExo3Q2i/MfmY8/ScOUrTmycyv4Nqr1kw/p2n+vMr6Reub8XEYJlOLGqNEishVDMb87O70n0qEfjq0r5qACYxCwEIfZSVchwmsSMBCXxGuQ5vAKAQs9LKVcCATGJeAhT7u2rgyEygjYKGXoXQgExiXgIU+7tq4MhMoIyCFzp4je75bMPY2y8h0CKSY8jCH/8o4xu98xlsxyfgraN3c3Ew8YGTJqKMiDw8XWcrBdfwqD2cYGBuZFDqniHiqxxaMNyUFZRQ/N7ViCvtR6u1RB/0qJhl/Ra2IJ7LMIZVMHVEOfJk8jGFsZFLomWI9xgRMYGwCFvrY6+PqTKCEgIVegnHLQVz7EQhY6EdYZfd4eAIW+uFvAQM4AgEL/Qir7B4PT8BCP/wtsCYAxx6FwP8AAAD//6cPWSkAAAAGSURBVAMAucMxNdUfgfYAAAAASUVORK5CYII="
+    qr_code = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAPoAAAD6CAYAAACI7Fo9AAAQAElEQVR4Aeydi3XcNhOFedSF0kZchqIypDJilSGXIbsMpYwkZeT3l5i/9VjOHS2GWJC8PhmvxQHm8YF342NguVe//vrrP0eyp6enf9SvCh7Pz89hmj///FNyf3x8DGNknNTR2s/NzY1MRa2tee7u7mSeigHcA621bm3+1eRfJmACuydgoe9+id2gCUyThe67wAQOQGBNoR8An1s0gW0QsNC3sU6u0gSaCFjoTfg82QS2QcBC38Y6uUoTaCIghX59fT1930cdzRbraaLxY3JFv3/99df09evXRfv27dtiD3P+73u1Pypa94U8c85Tr7/99ttiH3OP9Htq7strmS7meC2vmTxqjGLysq9L/xmNqn6k0Gn48+fP0+cNGDekajjjr+gVIT88PExLxo2s8sA+U2/rmLu7u3B9uZGX+piv//LLL2EMelU35B9//LHIa86TeW3lwXzFhH5Gscx9IoVO0zYTMIFtE7DQt71+rt4EUgQs9PeYfMUEdkfAQt/dkrohE3hPwEJ/z8RXTGB3BCz03S2pGzKB9wQs9PdM1rzi2CZwEQIlQv/y5ct0f3+/unEo4yKU3iRlv1f1y5g301b5kb3cqBb8qyQ+Iyi1PD4+Tkv2+++/y6jsby/Nn6/LIEUDIu5VPphVlFsidG7qHlbRcEUM3nBUvxV5MjFUHX///XcmTJcxHOyIjEM3qhAO3UQx8KkYFf7MPaDWJuOvWr8SoVeAcwwTMIH1CFjo67HtHdn5TGCRgIW+iMYOE9gPAQt9P2vpTkxgkYCFvojGDhPYDwELfT9ruWYnjr1xAhb6GQvINhDbPJGdEfbdFLZwlL2bdKELqk78FaWx3USsyCry7C2GhX7GirJXy4MjImPMGaFfTeHhFbe3t1Nk3PivJl3oh0ytiLO1PA5nRTzwtebY43wLfY+r6p5M4A0BC/0NEP/YnYATdiBgoXeA7BQmcGkCFvqlV8D5TaADAQu9A2SnMIFLE7DQL70Czr8mAcf+QcBC/wHCLyawZwIW+kqry5ce8JCEyNgTjozSovn4GNNqnAeI6sDXmqNqfoZrVa49xbHQV1pNvjUGIS4ZB2oQUGSUtjR/vs7pPMa1GIddojrwt8SvnAu3ufel18p8e4lloe9lJd1HbwKbymehb2q5XKwJnEfAQj+Pm2eZwKYIWOibWi4XawLnEbDQz+PmWSawJoHy2BZ6OVIHNIHxCFjo462JKzKBcgIlQucbNp6enqa1jSe7lBM4IyAP3mefPDLGnBH61RQOskQ58PFNHhF3vr3kVdATP/Rav4eHh4mal0z1Qp88aGNp/nz9RIurXKKetS2zfpnmSoSOAHtYpqEeY3hSCjdcZBV1RPFnHwdmIvaZOqL5lT7FLZNLxYBLpufWMZlaK8a01jnPfyH0+ZJfTcAE9kbAQt/birofEzhBwEI/AcWXTGBvBCz0va2o+zGBEwQ6Cf1EZl8yARPoRsBC74baiUzgcgSk0NmuYE94K1aBUvVKDj4XHRljVJxoPj62zogzgqle2PYaoc6qGuhH9TyKH42qvqXQaeb+/n7agvHwBNVwxq96hQkHGSKjligO/mg+Pg6AZOpdeww3fdQLvpEeTlHBg8M99LUF435UPUuhqwCX97sCEzABRcBCV4TsN4EdELDQd7CIbsEEFAELXRGy3wR2QMBCDxfRThPYBwELfR/r6C5MICRgoYd47DSBfRC44qEDRzIOorQuHfuWPCQhMg67RFyjubOPB0+oWtmPn8efeiVGVAc+9slPzZ2vsaes6tiSn3uAvo9kVxzKOJLxMIDWm5KTSBwQiUwxvb6+nqL5+MijamVcZMRQtUTz8fHGpurYkp97QDHZm99/dd/SHepaTeBMAhb6meA8zQS2RMBC39JquVYTOJOAhX4muLGnuToTeE3AQn/Nwz+... [truncated]"
 
-    user["totp_secret"] = secret  # mark secret stored, but not yet enabled
+    user["totp_secret"] = secret
 
     return jsonify(
         {
@@ -280,12 +323,6 @@ def totp_setup():
 
 @app.post("/api/auth/totp/verify")
 def totp_verify():
-    """
-    Mock TOTP verify to enable 2FA.
-    Requires Authorization: Bearer <token>.
-    Body: { "code": string }
-    Accepts code "123456" for everyone.
-    """
     token, user = get_current_user()
     if not user:
         return jsonify({"error": "Unauthorized"}), 401
@@ -311,12 +348,6 @@ def totp_verify():
 
 @app.post("/api/auth/totp/disable")
 def totp_disable():
-    """
-    Mock TOTP disable.
-    Requires Authorization: Bearer <token>.
-    Body: { "code": string }
-    Accepts code "123456" for everyone.
-    """
     token, user = get_current_user()
     if not user:
         return jsonify({"error": "Unauthorized"}), 401
@@ -334,7 +365,7 @@ def totp_disable():
         return jsonify({"error": "Invalid TOTP code (mock: use 123456)"}), 400
 
     user["totp_enabled"] = False
-    user["totp_secret"] = None  # Clear secret on disable
+    user["totp_secret"] = None
 
     return jsonify(
         {
@@ -346,11 +377,6 @@ def totp_disable():
 
 @app.post("/api/auth/logout")
 def logout():
-    """
-    Mock logout.
-    Requires Authorization: Bearer <token>.
-    Simply removes the token from sessions dict.
-    """
     token, user = get_current_user()
     if not user:
         return jsonify(
@@ -360,7 +386,6 @@ def logout():
             }
         ), 401
 
-    # Remove token from sessions
     if token in sessions:
         del sessions[token]
 
@@ -370,42 +395,6 @@ def logout():
         }
     ), 200
 
-
-@app.post("/api/auth/password/change")
-def change_password():
-    """
-    Mock endpoint to change a user's password.
-    Requires Authorization: Bearer <token>.
-    Body can contain { oldPassword, newPassword } or { totpCode, newPassword }.
-    """
-    token, user = get_current_user()
-    if not user:
-        return jsonify({"message": "Unauthorized"}), 401
-
-    data = request.get_json(silent=True) or {}
-    old_password = data.get("oldPassword")
-    totp_code = data.get("totpCode")
-    new_password = data.get("newPassword")
-
-    if not new_password or len(new_password) < 6:
-        return jsonify({"message": "New password must be at least 6 characters"}), 400
-
-    if old_password:
-        if user["password"] != old_password:
-            return jsonify({"message": "The old password is incorrect"}), 400
-    elif totp_code:
-        if not user.get("totp_enabled"):
-            return jsonify({"message": "This account does not have TOTP enabled"}), 400
-        if totp_code != MOCK_TOTP_CODE:
-            return jsonify({"message": "Invalid TOTP code"}), 400
-    else:
-        return jsonify({"message": "Either oldPassword or totpCode is required"}), 400
-
-    # Update password
-    user["password"] = new_password
-    
-    return jsonify({"message": "Password changed successfully"}), 200
-
 @app.get("/api/files/my")
 def get_user_files():
     token, user = get_current_user()
@@ -414,44 +403,38 @@ def get_user_files():
 
     user_email = user["email"]
 
-    # Get query params from request
     status_filter = request.args.get("status", "all")
     page = int(request.args.get("page", 1))
     limit = int(request.args.get("limit", 20))
     sort_by = request.args.get("sortBy", "createdAt")
     order = request.args.get("order", "desc")
 
-    # In a real app, this would be a database query. Here, we filter the in-memory dict.
     user_files_with_status = [
         (file_meta, get_file_status(file_meta))
         for file_meta in files.values()
         if file_meta.get("ownerEmail") == user_email
     ]
 
-    # Filter by status
     if status_filter != "all":
         user_files_with_status = [
             (file, status) for file, status in user_files_with_status if status == status_filter
         ]
 
-    # Sort files
     reverse_order = order == "desc"
     if sort_by == "fileName":
         user_files_with_status.sort(
             key=lambda item: item[0].get("filename", "").lower(), reverse=reverse_order
         )
-    else:  # Default to sorting by createdAt
+    else:
         user_files_with_status.sort(
             key=lambda item: item[0]["createdAt"], reverse=reverse_order
         )
 
-    # Paginate files
     total_files = len(user_files_with_status)
     start_index = (page - 1) * limit
     end_index = start_index + limit
     paginated_files_with_status = user_files_with_status[start_index:end_index]
 
-    # Process files and calculate summary
     serialized_files = []
     summary = {
         "activeFiles": 0,
@@ -460,7 +443,6 @@ def get_user_files():
         "deletedFiles": 0,
     }
 
-    # Calculate summary based on all user files (pre-pagination)
     for _, status in user_files_with_status:
         if status == "active":
             summary["activeFiles"] += 1
@@ -469,7 +451,6 @@ def get_user_files():
         elif status == "expired":
             summary["expiredFiles"] += 1
 
-    # Serialize only the paginated files
     for file_meta, status in paginated_files_with_status:
         serialized_files.append(
             {
@@ -481,7 +462,6 @@ def get_user_files():
             }
         )
 
-    # Mock pagination
     total_pages = (total_files + limit - 1) // limit
     pagination = {
         "currentPage": page,
@@ -500,11 +480,6 @@ def get_user_files():
 
 @app.get("/api/user")
 def get_user_profile():
-    """
-    Mock endpoint to get a user's full profile, including files.
-    This corresponds to the UserProfileResponse in the frontend.
-    Requires Authorization: Bearer <token>.
-    """
     token, user = get_current_user()
     if not user:
         return jsonify({"message": "Unauthorized"}), 401
@@ -543,6 +518,9 @@ def get_policy():
 @app.patch("/api/admin/policy")
 def update_policy():
     data = request.get_json(silent=True) or {}
+    token, user = get_current_user()
+    if not user or user.get("role") != "admin":
+         return jsonify({"error": "Forbidden"}), 403
 
     for key in UPDATABLE_FIELDS:
         if key in data:
@@ -558,11 +536,30 @@ def update_policy():
 
 @app.post("/api/admin/cleanup")
 def admin_cleanup():
-    deleted_files = 100
+    # Mock cleanup: remove expired files from 'files' dict
+    # In reality, we should check if requester is admin or has cron secret
+    token, user = get_current_user()
+    # if not user or user.get("role") != "admin":
+    #    # Also check for X-Cron-Secret header if we were implementing it fully
+    #    pass
+
+    deleted_count = 0
+    files_to_remove = []
+    now = datetime.now(timezone.utc)
+
+    for fid, file_meta in files.items():
+        status = get_file_status(file_meta)
+        if status == "expired":
+            files_to_remove.append(fid)
+    
+    for fid in files_to_remove:
+        del files[fid]
+        deleted_count += 1
+
     return jsonify(
         {
             "message": "Cleanup hoàn tất (mock)",
-            "deletedFiles": deleted_files,
+            "deletedFiles": deleted_count,
             "timestamp": datetime.utcnow().isoformat() + "Z",
         }
     ), 200
@@ -570,18 +567,6 @@ def admin_cleanup():
 
 @app.post("/api/files/upload")
 def upload_file():
-    """
-    Mock file upload endpoint.
-    Accepts multipart/form-data fields:
-      - file (binary, required)
-      - isPublic (boolean)
-      - password (string, optional)
-      - availableFrom (ISO datetime string, optional)
-      - availableTo (ISO datetime string, optional)
-      - sharedWith (repeatable email fields)
-      - enableTOTP (boolean)
-    Returns: { success: true, file: {...}, totpSetup?: { secret, qrCode }, message }
-    """
     token, user = get_current_user()
 
     upload_file = request.files.get("file")
@@ -592,7 +577,6 @@ def upload_file():
     data = upload_file.read()
     size = len(data)
 
-    # Validate size against policy
     max_bytes = policy.get("maxFileSizeMB", 50) * 1024 * 1024
     if size > max_bytes:
         return (
@@ -605,7 +589,6 @@ def upload_file():
             413,
         )
 
-    # Parse form fields
     is_public = str(request.form.get("isPublic", "false")).lower() in (
         "1",
         "true",
@@ -628,12 +611,19 @@ def upload_file():
     available_to_raw = request.form.get("availableTo")
     available_from = None
     available_to = None
+    
     try:
         if available_from_raw:
-            available_from = datetime.fromisoformat(available_from_raw)
+            available_from = datetime.fromisoformat(available_from_raw.replace("Z", "+00:00"))
+        else:
+             available_from = datetime.now(timezone.utc)
+
         if available_to_raw:
-            available_to = datetime.fromisoformat(available_to_raw)
-        if available_from and available_to and available_from >= available_to:
+             available_to = datetime.fromisoformat(available_to_raw.replace("Z", "+00:00"))
+        else:
+             available_to = available_from + timedelta(days=policy.get("defaultValidityDays", 7))
+             
+        if available_from >= available_to:
             return jsonify(
                 {"error": "availableFrom must be earlier than availableTo"}
             ), 400
@@ -648,39 +638,48 @@ def upload_file():
         "on",
     )
 
-    # build file metadata
     file_id = str(uuid.uuid4())
-    share_token = file_id  # Use file_id as share_token for simplicity
+    share_token = file_id
     owner_email = user.get("email") if user else None
     share_link = f"http://localhost:3000/f/{share_token}"
+    
+    owner_info = None
+    if user:
+        owner_info = serialize_user(user)
 
     file_meta = {
         "id": file_id,
         "filename": filename,
         "size": size,
+        "mimeType": "application/octet-stream", # simplistic mock
         "shareToken": share_token,
         "ownerEmail": owner_email,
+        "owner": owner_info,
         "isPublic": bool(is_public),
         "passwordProtected": bool(password),
-        "availableFrom": available_from.isoformat() if available_from else None,
-        "availableTo": available_to.isoformat() if available_to else None,
+        "password": password, # Store password for verification
+        "availableFrom": available_from.isoformat(),
+        "availableTo": available_to.isoformat(),
         "sharedWith": shared_with,
         "shareLink": share_link,
         "createdAt": datetime.now(timezone.utc).isoformat(),
         "totpEnabled": bool(enable_totp),
     }
 
-    print(file_meta)
-
-    # store metadata (not storing file bytes permanently in this mock)
     files[file_id] = file_meta
+    
+    # Initialize stats
+    file_stats[file_id] = {
+        "downloadCount": 0,
+        "uniqueDownloaders": set(),
+        "lastDownloadedAt": None
+    }
+    download_history[file_id] = []
 
     totp_setup = None
     if enable_totp:
-        # generate a mock secret and QR placeholder
         secret = "MOCK-FILE-SECRET-" + uuid.uuid4().hex[:8]
-        # small base64 placeholder image (reuse simple qrcode-like placeholder)
-        qr_code = "data:image/png;base64,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"
+        qr_code = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAPoAAAD6CAYAAACI7Fo9AAAQAElEQVR4Aeydi3XcNhOFedSF0kZchqIypDJilSGXIbsMpYwkZeT3l5i/9VjOHS2GWJC8PhmvxQHm8YF342NguVe//vrrP0eyp6enf9SvCh7Pz89hmj///FNyf3x8DGNknNTR2s/NzY1MRa2tee7u7mSeigHcA621bm3+1eRfJmACuydgoe9+id2gCUyThe67wAQOQGBNoR8An1s0gW0QsNC3sU6u0gSaCFjoTfg82QS2QcBC38Y6uUoTaCIghX59fT1930cdzRbraaLxY3JFv3/99df09evXRfv27dtiD3P+73u1Pypa94U8c85Tr7/99ttiH3OP9Htq7strmS7meC2vmTxqjGLysq9L/xmNqn6k0Gn48+fP0+cNGDekajjjr+gVIT88PExLxo2s8sA+U2/rmLu7u3B9uZGX+piv//LLL2EMelU35B9//LHIa86TeW3lwXzFhH5Gscx9IoVO0zYTMIFtE7DQt71+rt4EUgQs9PeYfMUEdkfAQt/dkrohE3hPwEJ/z8RXTGB3BCz03S2pGzKB9wQs9PdM1rzi2CZwEQIlQv/y5ct0f3+/unEo4yKU3iRlv1f1y5g301b5kb3cqBb8qyQ+Iyi1PD4+Tkv2+++/y6jsby/Nn6/LIEUDIu5VPphVlFsidG7qHlbRcEUM3nBUvxV5MjFUHX///XcmTJcxHOyIjEM3qhAO3UQx8KkYFf7MPaDWJuOvWr8SoVeAcwwTMIH1CFjo67HtHdn5TGCRgIW+iMYOE9gPAQt9P2vpTkxgkYCFvojGDhPYDwELfT9ruWYnjr1xAhb6GQvINhDbPJGdEfbdFLZwlL2bdKELqk78FaWx3USsyCry7C2GhX7GirJXy4MjImPMGaFfTeHhFbe3t1Nk3PivJl3oh0ytiLO1PA5nRTzwtebY43wLfY+r6p5M4A0BC/0NEP/YnYATdiBgoXeA7BQmcGkCFvqlV8D5TaADAQu9A2SnMIFLE7DQL70Czr8mAcf+QcBC/wHCLyawZwIW+kqry5ce8JCEyNgTjozSovn4GNNqnAeI6sDXmqNqfoZrVa49xbHQV1pNvjUGIS4ZB2oQUGSUtjR/vs7pPMa1GIddojrwt8SvnAu3ufel18p8e4lloe9lJd1HbwKbymehb2q5XKwJnEfAQj+Pm2eZwKYIWOibWi4XawLnEbDQz+PmWSawJoHy2BZ6OVIHNIHxCFjo462JKzKBcgIlQucbNp6enqa1jSe7lBM4IyAP3mefPDLGnBH61RQOskQ58PFNHhF3vr3kVdATP/Rav4eHh4mal0z1Qp88aGNp/nz9RIurXKKetS2zfpnmSoSOAHtYpqEeY3hSCjdcZBV1RPFnHwdmIvaZOqL5lT7FLZNLxYBLpufWMZlaK8a01jnPfyH0+ZJfTcAE9kbAQt/birofEzhBwEI/AcWXTGBvBCz0va2o+zGBEwQ6Cf1EZl8yARPoRsBC74baiUzgcgSk0NmuYE94K1aBUvVKDj4XHRljVJxoPj62zogzgqle2PYaoc6qGuhH9TyKH42qvqXQaeb+/n7agvHwBNVwxq96hQkHGSKjligO/mg+Pg6AZOpdeww3fdQLvpEeTlHBg8M99LUF435UPUuhqwCX97sCEzABRcBCV4TsN4EdELDQd7CIbsEEFAELXRGy3wR2QMBCDxfRThPYBwELfR/r6C5MICRgoYd47DSBfRC44qEDRzIOorQuHfuWPCQhMg67RFyjubOPB0+oWtmPn8efeiVGVAc+9slPzZ2vsaes6tiSn3uAvo9kVxzKOJLxMIDWm5KTSBwQiUwxvb6+nqL5+MijamVcZMRQtUTz8fHGpurYkp97QDHZm99/dd/SHepaTeBMAhb6meA8zQS2RMBC39JquVYTOJOAhX4muLGnuToTeE3AQn/Nwz+... [truncated]"
         totp_setup = {"secret": secret, "qrCode": qr_code}
 
     response = {
@@ -691,15 +690,11 @@ def upload_file():
     if totp_setup:
         response["totpSetup"] = totp_setup
 
-    return jsonify(response), 200
+    return jsonify(response), 201
 
 
-@app.delete("/api/files/<string:file_id>")
+@app.delete("/api/files/info/<string:file_id>")
 def delete_file(file_id: str):
-    """
-    Mock endpoint to delete a file.
-    Requires Authorization: Bearer <token>.
-    """
     token, user = get_current_user()
     if not user:
         return jsonify({"message": "Unauthorized"}), 401
@@ -709,14 +704,227 @@ def delete_file(file_id: str):
 
     file_to_delete = files[file_id]
 
-    if file_to_delete.get("ownerEmail") != user["email"]:
+    if file_to_delete.get("ownerEmail") != user["email"] and user.get("role") != "admin":
         return jsonify({"message": "Forbidden"}), 403
 
-    # Delete the file from the in-memory store
     del files[file_id]
+    if file_id in file_stats:
+        del file_stats[file_id]
+    if file_id in download_history:
+        del download_history[file_id]
 
     return jsonify({"message": "File deleted successfully", "fileId": file_id}), 200
 
+@app.get("/api/files/info/<string:file_id>")
+def get_file_info_detailed(file_id: str):
+    """
+    Get detailed file info for owner/admin (authenticated).
+    """
+    token, user = get_current_user()
+    if not user:
+        return jsonify({"message": "Unauthorized"}), 401
+
+    if file_id not in files:
+        return jsonify({"message": "File not found"}), 404
+
+    file_meta = files[file_id]
+
+    # Check permission
+    if file_meta.get("ownerEmail") != user["email"] and user.get("role") != "admin":
+        return jsonify({"message": "Forbidden"}), 403
+
+    # Calculate hours remaining
+    status = get_file_status(file_meta)
+    hours_remaining = 0
+    if file_meta.get("availableTo"):
+        to_date = datetime.fromisoformat(file_meta["availableTo"])
+        now = datetime.now(timezone.utc)
+        diff = to_date - now
+        hours_remaining = max(0, diff.total_seconds() / 3600)
+
+    # Copy and enhance
+    response_file = file_meta.copy()
+    response_file["status"] = status
+    response_file["hoursRemaining"] = hours_remaining
+    # Don't show password in response even to owner? Spec doesn't say. Usually no.
+    if "password" in response_file:
+        del response_file["password"]
+
+    return jsonify({"file": response_file}), 200
+
+@app.get("/api/files/<string:share_token>")
+def get_file_info_public(share_token: str):
+    """
+    Get basic file info via share token (public).
+    """
+    # In our mock, share_token == file_id
+    file_id = share_token
+    
+    if file_id not in files:
+        return jsonify({"message": "File not found"}), 404
+
+    file_meta = files[file_id]
+    status = get_file_status(file_meta)
+
+    if status == "expired":
+        return jsonify({"error": "File expired", "message": "File has expired"}), 410
+
+    # Only return basic info
+    response_file = {
+        "id": file_meta["id"],
+        "fileName": file_meta["filename"],
+        "shareToken": file_meta["shareToken"],
+        "status": status,
+        "isPublic": file_meta["isPublic"],
+        "hasPassword": file_meta["passwordProtected"],
+    }
+    
+    return jsonify({"file": response_file}), 200
+
+@app.get("/api/files/<string:share_token>/download")
+def download_file(share_token: str):
+    # In our mock, share_token == file_id
+    file_id = share_token
+    
+    if file_id not in files:
+        return jsonify({"message": "File not found"}), 404
+
+    file_meta = files[file_id]
+    status = get_file_status(file_meta)
+    token, user = get_current_user()
+
+    # 1. Status check
+    # Allow owner to bypass pending/expired? Spec says owner preview in pending is allowed.
+    is_owner = user and user["email"] == file_meta.get("ownerEmail")
+    
+    if status == "expired":
+         return jsonify({"error": "File expired", "expiredAt": file_meta.get("availableTo")}), 410
+    if status == "pending" and not is_owner:
+         hours_until = 0
+         if file_meta.get("availableFrom"):
+             frm = datetime.fromisoformat(file_meta["availableFrom"])
+             diff = frm - datetime.now(timezone.utc)
+             hours_until = diff.total_seconds() / 3600
+         return jsonify({"error": "File not yet available", "availableFrom": file_meta.get("availableFrom"), "hoursUntilAvailable": hours_until}), 423
+
+    # 2. Whitelist check
+    shared_with = file_meta.get("sharedWith", [])
+    if not file_meta["isPublic"] or shared_with:
+        # Requires auth
+        if not user:
+            return jsonify({"error": "Unauthorized", "message": "Authentication required for private file"}), 401
+        
+        # If sharedWith is set, user email must be in it OR user is owner
+        if shared_with:
+             if user["email"] not in shared_with and not is_owner:
+                 return jsonify({"error": "Access denied", "message": "You are not in the shared list"}), 403
+        elif not file_meta["isPublic"] and not is_owner:
+             # Private file, no whitelist -> only owner? 
+             # Usually implied "sharedWith" empty means ONLY owner if private.
+             return jsonify({"error": "Access denied", "message": "Private file"}), 403
+
+    # 3. Password check
+    if file_meta["passwordProtected"]:
+        pwd_header = request.headers.get("X-File-Password")
+        if not pwd_header:
+             return jsonify({"error": "Password required", "message": "Password protected"}), 403
+        if pwd_header != file_meta.get("password"):
+             return jsonify({"error": "Incorrect password", "message": "Wrong password"}), 403
+
+    # Log stats
+    if file_id in file_stats:
+        file_stats[file_id]["downloadCount"] += 1
+        file_stats[file_id]["lastDownloadedAt"] = datetime.now(timezone.utc).isoformat()
+        if user:
+            file_stats[file_id]["uniqueDownloaders"].add(user["email"])
+            
+    # Log history
+    if file_id in download_history:
+        downloader_info = None
+        if user:
+            downloader_info = {"username": user["username"], "email": user["email"]}
+        
+        download_history[file_id].insert(0, {
+            "id": str(uuid.uuid4()),
+            "downloader": downloader_info,
+            "downloadedAt": datetime.now(timezone.utc).isoformat(),
+            "downloadCompleted": True
+        })
+
+    # Return dummy file content
+    dummy_content = f"This is the content of file {file_meta['filename']}".encode('utf-8')
+    return send_file(
+        io.BytesIO(dummy_content),
+        mimetype="application/octet-stream",
+        as_attachment=True,
+        download_name=file_meta["filename"]
+    )
+
+@app.get("/api/files/stats/<string:file_id>")
+def get_file_stats(file_id: str):
+    token, user = get_current_user()
+    if not user:
+        return jsonify({"message": "Unauthorized"}), 401
+
+    if file_id not in files:
+        return jsonify({"message": "File not found"}), 404
+    
+    file_meta = files[file_id]
+    if file_meta.get("ownerEmail") != user["email"] and user.get("role") != "admin":
+        return jsonify({"message": "Forbidden"}), 403
+    
+    if file_meta.get("ownerEmail") is None: # Anonymous upload
+         return jsonify({"message": "Statistics not available for anonymous uploads"}), 404
+
+    stats = file_stats.get(file_id, {})
+    
+    response = {
+        "fileId": file_id,
+        "fileName": file_meta["filename"],
+        "statistics": {
+            "downloadCount": stats.get("downloadCount", 0),
+            "uniqueDownloaders": len(stats.get("uniqueDownloaders", set())),
+            "lastDownloadedAt": stats.get("lastDownloadedAt"),
+            "createdAt": file_meta["createdAt"]
+        }
+    }
+    return jsonify(response), 200
+
+@app.get("/api/files/download-history/<string:file_id>")
+def get_download_history(file_id: str):
+    token, user = get_current_user()
+    if not user:
+        return jsonify({"message": "Unauthorized"}), 401
+
+    if file_id not in files:
+        return jsonify({"message": "File not found"}), 404
+    
+    file_meta = files[file_id]
+    if file_meta.get("ownerEmail") != user["email"] and user.get("role") != "admin":
+        return jsonify({"message": "Forbidden"}), 403
+
+    history = download_history.get(file_id, [])
+    
+    # Pagination
+    page = int(request.args.get("page", 1))
+    limit = int(request.args.get("limit", 50))
+    
+    start = (page - 1) * limit
+    end = start + limit
+    paginated_history = history[start:end]
+    
+    response = {
+        "fileId": file_id,
+        "fileName": file_meta["filename"],
+        "history": paginated_history,
+        "pagination": {
+            "currentPage": page,
+            "totalPages": (len(history) + limit - 1) // limit,
+            "totalRecords": len(history),
+            "limit": limit
+        }
+    }
+    return jsonify(response), 200
 
 if __name__ == "__main__":
     # For local dev only
